@@ -1,0 +1,116 @@
+---
+title: "UnlockPhonics"
+format: html
+---
+
+```{r}
+#| context: setup
+#| warning: FALSE
+
+library(tidyverse)
+library(readxl)
+
+## Here are the 3 Unlock Phonics Schools
+UnlockPhonicsUses <- c("11X483","11X041","11X111")
+
+ELA_All <- read_xlsx("school-ela-results-2018-2024-public_dpp_.xlsx",
+                     sheet="ELA - All")
+## Looks to have a fair amount of suppressed data - bringing in district data for NYC comparison
+ELA_All_District <- read_xlsx("district-ela-results-2018-2024-public_dpp.xlsx",
+                     sheet="ELA - All")
+```
+
+```{r}
+#| label: wrangling
+
+firstcomparison <- ELA_All |> 
+  ## get the D11 schools here
+  mutate(identifier=case_when(DBN %in% UnlockPhonicsUses ~ "Unlock Phonics Schools",
+                              str_detect(DBN,"^11X") ~ "Non-Unlock Phonics District 11",
+                              .default="NYC School")) |> 
+  ## filter for D11 schools
+  filter(identifier !="NYC School",
+         ## filter for elementary scores
+         Grade %in% c("3","4","5"),
+         ## year should be limited to last two years for growth score
+         Year %in% c("2023","2024")) |> 
+  ## only select columns we are interested in
+  select(DBN,Grade,Year,Category,`Number Tested`,`# Level 3+4`,identifier) |> 
+  ## group in order to calculate sums w/in same school
+  group_by(DBN,Year,Category,identifier) |> 
+  summarise(`Number Tested`=sum(`Number Tested`),
+            `# Level 3+4`=sum(as.numeric(`# Level 3+4`))) |> 
+  ungroup()
+
+districts <- ELA_All_District |> 
+  ##filter out D11 and D75
+  filter(!(District %in% c(11,75)),
+         ## elementary grades only
+         Grade %in% c("3","4","5"),
+         ## year should be limited to last two years for growth score
+         Year %in% c("2023","2024")) |> 
+  ## only select columns we are interested in
+  select(District,Grade,Year,Category,`Number Tested`,`# Level 3+4`) |> 
+  ## group in order to calculate sums w/in each district
+  group_by(District,Year,Category) |> 
+  summarise(`Number Tested`=sum(`Number Tested`),
+            `# Level 3+4`=sum(as.numeric(`# Level 3+4`))) |> 
+  ungroup()
+
+```
+
+
+```{r}
+## work looks good at district and school level, comparing with the google sheet. Now let's group a little further and get achievement results
+UnlockPhonicsResults <- firstcomparison |> 
+  group_by(identifier,Year,Category) |> 
+  summarise(`Number Tested`=sum(`Number Tested`),
+            `# Level 3+4`=sum(as.numeric(`# Level 3+4`))) |> 
+  mutate(Passing=`# Level 3+4`/`Number Tested`*100) |> 
+  pivot_wider(names_from=Year,
+              values_from=c(`Number Tested`,`# Level 3+4`,Passing)) |> 
+  mutate(Growth=round(Passing_2024-Passing_2023,1))
+
+NYCResults <- districts |> 
+  group_by(Year,Category) |> 
+  summarise(`Number Tested`=sum(`Number Tested`),
+            `# Level 3+4`=sum(as.numeric(`# Level 3+4`))) |> 
+  mutate(Passing=`# Level 3+4`/`Number Tested`*100) |> 
+  pivot_wider(names_from=Year,
+              values_from=c(`Number Tested`,`# Level 3+4`,Passing)) |> 
+  mutate(Growth=round(Passing_2024-Passing_2023,1),
+         identifier="NYC Schools")
+
+Allresults <- bind_rows(UnlockPhonicsResults,NYCResults)
+```
+
+```{r}
+library(gt)
+
+resultstable <- Allresults |> 
+  ungroup() |> 
+  select(identifier, Category, `Number Tested_2024`,Passing_2023:Growth) |> 
+  mutate(identifier=factor(identifier,levels=c("Unlock Phonics Schools","Non-Unlock Phonics District 11","NYC Schools"))) |>
+  arrange(identifier) |> 
+  gt() |> 
+  cols_label(identifier="School Group",
+             `Number Tested_2024`="Number of students tested (2024)",
+             Passing_2023="Percent students receiving 3/4 (2023)",
+             Passing_2024="Percent students receiving 3/4 (2024)",
+             Growth="Change in Passing Rate (Growth Score)") |> 
+  fmt_percent(columns=Passing_2023:Growth,
+              decimals=1,
+              scale_values=FALSE) |> 
+  tab_header(title = md("Growth for D11 Schools using and not using **Unlock Phonics**"),
+    subtitle = "EL Education students appear to outgrow other groups"
+  ) |> 
+  tab_source_note(source_note = md("All data taken from grades 3, 4 and 5 achievement scores publicly released on NYC's [Info Hub](https://infohub.nyced.org/reports/academics/test-results)"))  |> 
+  opt_stylize(style=6, color="gray") |> 
+  opt_table_font(font=google_font("Poppins"))
+
+resultstable
+```
+
+```{r}
+gtsave(resultstable,"Results.png")
+```
